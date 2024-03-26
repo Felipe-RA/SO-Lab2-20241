@@ -5,6 +5,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h> // For open()
+#include <ctype.h> // For isspace()
+#include <stdbool.h> // to use bool type
+
 
 #define MAX_LINE 1024 // Max input line size
 
@@ -44,6 +47,48 @@ void parse_command_to_args(char *command, char **args) {
         }
     }
     args[i] = NULL;
+}
+
+
+int is_line_empty_or_whitespace(const char* line) {
+    while (*line != '\0') {
+        if (!isspace((unsigned char)*line))
+            return 0; // Found a non-whitespace character
+        line++;
+    }
+    return 1; // Line is empty or all whitespace
+}
+
+
+void split_commands(char* line, char*** commands, int* num_commands) {
+    int capacity = 10; // Initial capacity
+    *commands = malloc(capacity * sizeof(char*)); // Dynamically allocated array of command strings
+    if (*commands == NULL) {
+        fprintf(stderr, "Memory allocation failed\n");
+        exit(EXIT_FAILURE);
+    }
+
+    *num_commands = 0;
+    char* token = strtok(line, "&");
+    while (token != NULL) {
+        if (*num_commands >= capacity) {
+            // Increase capacity
+            capacity *= 2;
+            *commands = realloc(*commands, capacity * sizeof(char*));
+            if (*commands == NULL) {
+                fprintf(stderr, "Memory allocation failed\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+        
+        (*commands)[*num_commands] = strdup(token); // Duplicate and store the command
+        if ((*commands)[*num_commands] == NULL) {
+            fprintf(stderr, "Memory allocation failed\n");
+            exit(EXIT_FAILURE);
+        }
+        (*num_commands)++;
+        token = strtok(NULL, "&");
+    }
 }
 
 
@@ -180,30 +225,50 @@ int check_builtin_commands(char **args, int arg_count) {
     return 0; // Not a built-in command
 }
 
-// parses commands and executes them
+// Parses commands and executes them
 void process_command(char *line) {
-    char *args[MAX_LINE / 2 + 1]; // Command arguments
-    char *token;
-    int arg_count = 0;
+    printf("Log: Starting process_command() with line: %s\n", line);
 
-    // Parse the input line into arguments
-    while ((token = strsep(&line, " \t\n")) != NULL) {
-        if (strlen(token) > 0) {
-            args[arg_count++] = token;
-        }
-    }
-    args[arg_count] = NULL; // Null-terminate the array
+    // Trim the line and check if it's empty or all whitespace
+    if (is_line_empty_or_whitespace(line)){
+        printf("Debug: Command is empty or whitespace\n");
 
-    if (arg_count == 0) { // Empty command
         return;
     }
 
-    // Handle redirection (if present) and adjust arg_count
+    char** commands;
+    int num_commands = 0;
+    split_commands(line, &commands, &num_commands); // Split line into parallel commands
+    printf("Debug: Number of commands to process: %d\n", num_commands);
 
-    if (!check_builtin_commands(args, arg_count)) {
-        execute_external_command(args); 
+    if (num_commands == 1) {
+        printf("Log: Processing a single command in process_command()\n");
+
+        // If only one command, process normally.
+        char *args[MAX_LINE / 2 + 1]; // Command arguments
+        parse_command_to_args(commands[0], args); // Parse command string to args
+        
+        if (!check_builtin_commands(args, count_args(args))) {
+            execute_external_command(args); // Execute if not a built-in command
+        }
+    } else {
+        printf("Debug: Multiple commands detected, executing in parallel\n");
+        
+        // If multiple commands, execute them in parallel.
+        execute_commands_in_parallel(commands, num_commands);
     }
+
+    // Free dynamically allocated commands array after execution
+    for (int i = 0; i < num_commands; i++) {
+        free(commands[i]);
+    }
+    free(commands);
+    printf("Debug: Finished processing command\n");
+    
+    // In interactive mode, the prompt display is handled by the caller (main loop)
 }
+
+
 
 
 ////////#########//////// END SHELL EXECUTION LOGIC ////////#########////////
@@ -262,25 +327,33 @@ char* findExecutable(char* command) {
 
 
 
-/**       ######  -->    void execute_external_command(char **args)   <---     ######
+/**       
+ * Executes an external command with optional output redirection.
  * 
- * Executes an external command by creating a child process using fork(). 
- * This function searches for the command in the directories specified by the shell's PATH,
- * and executes it using execv(). If the command includes redirection (indicated by '>'),
- * the function redirects the output of the command to the specified file.
+ * This function is responsible for executing a command specified by the `args` array, 
+ * handling output redirection if a '>' operator is present among the arguments. The command 
+ * to execute is determined by `args[0]`, and any arguments to the command follow in the array. 
+ * If redirection is specified (indicated by '>'), the output of the command is written to the 
+ * file named immediately after this operator, creating or truncating the file as necessary.
  * 
- * Args:
- *    args: Null-terminated array of arguments. The first argument is the command to execute,
- *          and subsequent elements are the command's arguments. If redirection is indicated,
- *          the array will also contain '>' followed by the filename to redirect output to.
+ * The function first searches for the executable in the filesystem using `findExecutable`, 
+ * which checks both directly specified paths (e.g., "./script.sh" or "/bin/ls") and searches 
+ * the directories listed in the global path list for the executable. It then forks a new process 
+ * to execute the command. In the child process, if redirection is specified, it adjusts the 
+ * standard output to the target file before executing the command using `execv`. The parent 
+ * process waits for the child process to complete before returning.
  * 
- * Note:
- *    This function modifies the 'args' array if redirection is detected, by NULL-terminating
- *    it at the index of the '>' operator to ensure execv() does not receive redirection
- *    operators as part of the command to execute.
+ * Detailed logging statements are included to facilitate debugging and tracing the execution 
+ * flow, including indicating when redirection is handled, when the child process is forked, 
+ * and when execution of the external command is attempted.
+ * 
+ * @param args An array of strings representing the command and its arguments. The last element 
+ *             must be NULL. If redirection is specified, the array will include a '>' followed 
+ *             by a filename, and the array will be terminated before the '>' for execv execution.
  */
-// Executes an external command, handling redirection if present.
 void execute_external_command(char **args) {
+    printf("Log: Starting execute_external_command()\n");
+    
     int redirect_index = -1;
     int fd = -1; // File descriptor for redirection, if needed
 
@@ -288,6 +361,7 @@ void execute_external_command(char **args) {
     for (int i = 0; args[i] != NULL; i++) {
         if (strcmp(args[i], ">") == 0) {
             redirect_index = i;
+            printf("Log: Redirection found at index %d\n", redirect_index);
             break;
         }
     }
@@ -301,6 +375,8 @@ void execute_external_command(char **args) {
     pid_t pid = fork();
 
     if (pid == 0) { // Child process
+        printf("Log: Forked in execute_external_command() with pid = 0\n");
+        printf("Log: In child process (execute_external_command)\n");
         // Handle redirection by replacing STDOUT
         if (redirect_index != -1) {
             fd = open(args[redirect_index + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -314,22 +390,36 @@ void execute_external_command(char **args) {
         }
 
         // Execute the command
+        printf("Log: Executing %s\n", executablePath);
         if (execv(executablePath, args) == -1) {
             perror("wish: execv");
             exit(EXIT_FAILURE);
         }
-    } else if (pid < 0) {
+    } else if (pid > 0) {
+        printf("Log: Forked in execute_external_command() with pid = %d\n", pid);
+        // Parent process waits for the child process to complete
+        int status;
+        waitpid(pid, &status, 0);
+        printf("Log: Child process completed\n");
+    } else {
         perror("wish: fork");
     }
     
     free(executablePath); // Free dynamically allocated path
+    printf("Log: Finished execute_external_command()\n");
 }
 
 
+
+
 void execute_commands_in_parallel(char **commands, int num_commands) {
+    printf("Log: Starting execute_commands_in_parallel() with %d commands\n", num_commands);
+    
     pid_t pids[num_commands]; // Array to store child PIDs
 
     for (int i = 0; i < num_commands; i++) {
+        printf("Log: Forking command %d in execute_commands_in_parallel()\n", i);
+
         pids[i] = fork();
         
         if (pids[i] == 0) { // Child process
@@ -348,8 +438,12 @@ void execute_commands_in_parallel(char **commands, int num_commands) {
 
     // Parent waits for all child processes
     for (int i = 0; i < num_commands; i++) {
+        printf("Log: Waiting for command %d to finish in execute_commands_in_parallel()\n", i);
+
         waitpid(pids[i], NULL, 0);
     }
+    printf("Log: Ending execute_commands_in_parallel()\n");
+
 }
 
 
@@ -366,39 +460,43 @@ int main(int argc, char *argv[]) {
     initPathList(&globalPathList, 10);
     initDefaultPath(&globalPathList);
 
-    char *line = NULL; // Stores the input line
-    size_t linecap = 0; // Capacity of the line
-    FILE *input_stream = stdin; // Default to standard input
+    char *line = NULL;
+    size_t linecap = 0;
+    FILE *input_stream = stdin;
+    bool isInteractive = (argc == 1);
 
-    // Check for batch mode or interactive mode
-    if (argc == 1) {
-        // Interactive mode
+
+    printf("Debug: Starting shell in %s mode\n", isInteractive ? "interactive" : "batch");
+
+    // Display initial prompt if in interactive mode
+    if (isInteractive) {
         printf("wish> ");
-    } else if (argc == 2) {
-        // Batch mode
-        input_stream = fopen(argv[1], "r");
-        if (!input_stream) {
-            fprintf(stderr, "wish: error opening file %s\n", argv[1]);
-            exit(1);
-        }
-    } else {
-        fprintf(stderr, "Usage: ./wish or ./wish <batch file>\n");
-        exit(1);
+        fflush(stdout); // Ensure the prompt is displayed immediately
     }
 
-    // Main loop for reading and processing commands
     while (getline(&line, &linecap, input_stream) != -1) {
         process_command(line);
-        if (input_stream == stdin) printf("wish> "); // Only print prompt in interactive mode
+
+        // Display prompt after command execution in interactive mode
+        if (isInteractive) {
+            printf("Debug: Command processing finished, displaying prompt\n");
+
+            printf("wish> ");
+        }
     }
 
     if (feof(stdin)) {
-        printf("\n"); // Ensure we start on a new line after EOF
+        printf("\n"); // Print a newline if we reach the end of input (EOF)
     }
 
-    if (input_stream != stdin) fclose(input_stream); // Close the file if in batch mode
-    free(line); // Free the allocated line buffer
+    if (input_stream != stdin) {
+        fclose(input_stream); // Close the batch file if we're in batch mode
+    }
 
+    free(line);
     freePathList(&globalPathList);
+    printf("Debug: Exiting shell\n");
+
     return 0;
 }
+

@@ -13,9 +13,44 @@
 
 void execute_external_command(char **args);
 void handle_redirection(char **args, int *arg_count);
+void execute_commands_in_parallel(char **commands, int num_commands);
+void parse_command_to_args(char *command, char **args);
 
 
 ////////#########////////  END FUNCTION PROTOTYPES  ////////#########////////
+
+
+
+
+
+////////#########////////  HELPER FUNCTIONS  ////////#########////////
+
+
+
+// helper funct to handle arg counting
+int count_args(char **args) {
+    int count = 0;
+    while (args[count] != NULL) count++;
+    return count;
+}
+
+// helper funct to parse command to args
+void parse_command_to_args(char *command, char **args) {
+    int i = 0;
+    char *token;
+    while ((token = strsep(&command, " \t\n")) != NULL) {
+        if (strlen(token) > 0) {
+            args[i++] = token;
+        }
+    }
+    args[i] = NULL;
+}
+
+
+
+////////#########//////// END HELPER FUNCTIONS  ////////#########////////
+
+
 
 
 
@@ -39,9 +74,16 @@ PathList globalPathList;
 // Initialize the path list with a default size
 void initPathList(PathList *pathList, int capacity) {
     pathList->paths = (char**)malloc(capacity * sizeof(char*));
+    // Check if malloc succeeded
+    if (pathList->paths == NULL) {
+        // Handle memory allocation failure
+        fprintf(stderr, "Error: Memory allocation failed in initPathList\n");
+        exit(EXIT_FAILURE); // Exit the program with a failure status
+    }
     pathList->count = 0;
     pathList->capacity = capacity;
 }
+
 
 
 
@@ -237,11 +279,12 @@ char* findExecutable(char* command) {
  *    it at the index of the '>' operator to ensure execv() does not receive redirection
  *    operators as part of the command to execute.
  */
+// Executes an external command, handling redirection if present.
 void execute_external_command(char **args) {
     int redirect_index = -1;
-    int fd = -1; // File descriptor for the redirection file
-    
-    // Check for redirection in the command arguments
+    int fd = -1; // File descriptor for redirection, if needed
+
+    // Search for redirection symbol ('>') and note its index
     for (int i = 0; args[i] != NULL; i++) {
         if (strcmp(args[i], ">") == 0) {
             redirect_index = i;
@@ -258,7 +301,7 @@ void execute_external_command(char **args) {
     pid_t pid = fork();
 
     if (pid == 0) { // Child process
-        // Handle redirection if present
+        // Handle redirection by replacing STDOUT
         if (redirect_index != -1) {
             fd = open(args[redirect_index + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (fd == -1) {
@@ -266,8 +309,8 @@ void execute_external_command(char **args) {
                 exit(EXIT_FAILURE);
             }
             dup2(fd, STDOUT_FILENO);
-            close(fd); // The file descriptor is no longer needed after dup2
-            args[redirect_index] = NULL; // Terminate the arguments list before the redirection symbol
+            close(fd);
+            args[redirect_index] = NULL; // Terminate args before '>'
         }
 
         // Execute the command
@@ -275,16 +318,39 @@ void execute_external_command(char **args) {
             perror("wish: execv");
             exit(EXIT_FAILURE);
         }
-    } else if (pid > 0) { // Parent process
-        int status;
-        waitpid(pid, &status, 0); // Wait for the child process to finish
-    } else {
-        perror("wish: fork"); // Error forking
+    } else if (pid < 0) {
+        perror("wish: fork");
     }
     
-    free(executablePath); // Free the dynamically allocated path
+    free(executablePath); // Free dynamically allocated path
 }
 
+
+void execute_commands_in_parallel(char **commands, int num_commands) {
+    pid_t pids[num_commands]; // Array to store child PIDs
+
+    for (int i = 0; i < num_commands; i++) {
+        pids[i] = fork();
+        
+        if (pids[i] == 0) { // Child process
+            char *args[MAX_LINE / 2 + 1]; // Array for command arguments
+            parse_command_to_args(commands[i], args); // Parse command string to args
+            
+            if (!check_builtin_commands(args, count_args(args))) {
+                execute_external_command(args); // Execute if not a built-in command
+            }
+            exit(0); // Exit after execution
+        } else if (pids[i] < 0) {
+            perror("wish: fork");
+            exit(EXIT_FAILURE); // Forking failed
+        }
+    }
+
+    // Parent waits for all child processes
+    for (int i = 0; i < num_commands; i++) {
+        waitpid(pids[i], NULL, 0);
+    }
+}
 
 
 

@@ -4,8 +4,19 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h> // For open()
 
 #define MAX_LINE 1024 // Max input line size
+
+////////#########////////  FUNCTION PROTOTYPES  ////////#########////////
+
+
+void execute_external_command(char **args);
+void handle_redirection(char **args, int *arg_count);
+
+
+////////#########////////  END FUNCTION PROTOTYPES  ////////#########////////
+
 
 
 
@@ -145,6 +156,8 @@ void process_command(char *line) {
         return;
     }
 
+    // Handle redirection (if present) and adjust arg_count
+
     if (!check_builtin_commands(args, arg_count)) {
         execute_external_command(args); 
     }
@@ -174,8 +187,8 @@ void process_command(char *line) {
  * 
  * Parameters:
  *   command - A string representing the command to find. This can be just the name of the command
- *             (e.g., "ls") or a path to the command (either absolute like "/bin/ls" or relative like
- *             "./myscript").
+ *             (for example "ls") or a path to the command (either absolute like "/bin/ls" or relative like
+ *             "./give_permissions_to_all_scripts.sh").
  * 
  * Returns:
  *   A dynamically allocated string containing the full path to the executable command if found.
@@ -207,8 +220,35 @@ char* findExecutable(char* command) {
 
 
 
-// executes an external command
+/**       ######  -->    void execute_external_command(char **args)   <---     ######
+ * 
+ * Executes an external command by creating a child process using fork(). 
+ * This function searches for the command in the directories specified by the shell's PATH,
+ * and executes it using execv(). If the command includes redirection (indicated by '>'),
+ * the function redirects the output of the command to the specified file.
+ * 
+ * Args:
+ *    args: Null-terminated array of arguments. The first argument is the command to execute,
+ *          and subsequent elements are the command's arguments. If redirection is indicated,
+ *          the array will also contain '>' followed by the filename to redirect output to.
+ * 
+ * Note:
+ *    This function modifies the 'args' array if redirection is detected, by NULL-terminating
+ *    it at the index of the '>' operator to ensure execv() does not receive redirection
+ *    operators as part of the command to execute.
+ */
 void execute_external_command(char **args) {
+    int redirect_index = -1;
+    int fd = -1; // File descriptor for the redirection file
+    
+    // Check for redirection in the command arguments
+    for (int i = 0; args[i] != NULL; i++) {
+        if (strcmp(args[i], ">") == 0) {
+            redirect_index = i;
+            break;
+        }
+    }
+
     char* executablePath = findExecutable(args[0]);
     if (!executablePath) {
         fprintf(stderr, "wish: command not found: %s\n", args[0]);
@@ -217,23 +257,35 @@ void execute_external_command(char **args) {
 
     pid_t pid = fork();
 
-    if (pid == 0) {
-        // Child process
+    if (pid == 0) { // Child process
+        // Handle redirection if present
+        if (redirect_index != -1) {
+            fd = open(args[redirect_index + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd == -1) {
+                perror("wish: open");
+                exit(EXIT_FAILURE);
+            }
+            dup2(fd, STDOUT_FILENO);
+            close(fd); // The file descriptor is no longer needed after dup2
+            args[redirect_index] = NULL; // Terminate the arguments list before the redirection symbol
+        }
+
+        // Execute the command
         if (execv(executablePath, args) == -1) {
             perror("wish: execv");
             exit(EXIT_FAILURE);
         }
-    } else if (pid > 0) {
-        // Parent process
+    } else if (pid > 0) { // Parent process
         int status;
         waitpid(pid, &status, 0); // Wait for the child process to finish
     } else {
-        // Error forking
-        perror("wish: fork");
+        perror("wish: fork"); // Error forking
     }
     
     free(executablePath); // Free the dynamically allocated path
 }
+
+
 
 
 

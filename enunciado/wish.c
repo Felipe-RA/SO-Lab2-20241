@@ -462,61 +462,61 @@ void execute_commands_in_parallel(char **commands, int num_commands) {
 
 
 int main(int argc, char *argv[]) {
+    initPathList(&globalPathList, 10);
+    initDefaultPath(&globalPathList);
 
-    // Process command-line arguments to set debug_mode
+    FILE *input_stream = stdin;
+    bool isInteractive = true; // Default to interactive mode
+
+    // Parse command-line arguments
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--debug") == 0) {
             debug_mode = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
-            printf("Usage: wish [options]\n");
+            printf("Usage: wish [options] [script]\n");
             printf("Options:\n");
             printf("  --help        Display this help message and exit\n");
             printf("  --debug       Run in debug mode\n");
             return 0;  // Exit after displaying help
+        } else {
+            // Assume any other argument is a batch script filename
+            input_stream = fopen(argv[i], "r");
+            if (!input_stream) {
+                fprintf(stderr, "Error: Cannot open file '%s'\n", argv[i]);
+                exit(EXIT_FAILURE);
+            }
+            isInteractive = false; // Not interactive mode if a script file is specified
         }
     }
 
-    initPathList(&globalPathList, 10);
-    initDefaultPath(&globalPathList);
-
     char *line = NULL;
     size_t linecap = 0;
-    FILE *input_stream = stdin;
-    // Check if the standard input is a terminal
-    bool isInteractive = isatty(STDIN_FILENO);
 
     if (debug_mode) {
         printf("Debug: Starting shell in %s mode\n", isInteractive ? "interactive" : "batch");
     }
 
-    // Display initial prompt if in interactive mode
     if (isInteractive) {
-        printf("wish> ");
-        fflush(stdout); // Ensure the prompt is displayed immediately
+        printf("wish> "); // Print the prompt
     }
 
     while (getline(&line, &linecap, input_stream) != -1) {
-        process_command(line);
-
-        // Display prompt after command execution in interactive mode
+        process_command(line); 
+        
         if (isInteractive) {
-            if (debug_mode) printf("Debug: Command processing finished, displaying prompt\n");
             printf("wish> ");
-            fflush(stdout); // Ensure the prompt is displayed immediately after printing
+            fflush(stdout);
         }
     }
 
-    if (feof(stdin)) {
-        printf("\n"); // Print a newline if we reach the end of input (EOF)
-    }
-
-    if (input_stream != stdin) {
-        fclose(input_stream); // Close the batch file if we're in batch mode
+    if (!isInteractive && input_stream != stdin) {
+        fclose(input_stream); // Close the batch file if opened
     }
 
     free(line);
-    freePathList(&globalPathList);
-    if (debug_mode) printf("Debug: Exiting shell\n");
+    if (debug_mode && isInteractive) {
+        printf("Debug: Exiting shell\n");
+    }
 
     return 0;
 }

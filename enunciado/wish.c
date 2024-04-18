@@ -11,6 +11,9 @@
 
 #define MAX_LINE 1024 // Max input line size
 
+// Global debug mode flag
+int debug_mode = 0;
+
 ////////#########////////  FUNCTION PROTOTYPES  ////////#########////////
 
 
@@ -227,11 +230,11 @@ int check_builtin_commands(char **args, int arg_count) {
 
 // Parses commands and executes them
 void process_command(char *line) {
-    printf("Log: Starting process_command() with line: %s\n", line);
+    if (debug_mode) printf("Log: Starting process_command() with line: %s\n", line);
 
     // Trim the line and check if it's empty or all whitespace
     if (is_line_empty_or_whitespace(line)){
-        printf("Debug: Command is empty or whitespace\n");
+        if (debug_mode) printf("Debug: Command is empty or whitespace\n");
 
         return;
     }
@@ -239,10 +242,10 @@ void process_command(char *line) {
     char** commands;
     int num_commands = 0;
     split_commands(line, &commands, &num_commands); // Split line into parallel commands
-    printf("Debug: Number of commands to process: %d\n", num_commands);
+    if (debug_mode) printf("Debug: Number of commands to process: %d\n", num_commands);
 
     if (num_commands == 1) {
-        printf("Log: Processing a single command in process_command()\n");
+        if (debug_mode) printf("Log: Processing a single command in process_command()\n");
 
         // If only one command, process normally.
         char *args[MAX_LINE / 2 + 1]; // Command arguments
@@ -252,7 +255,7 @@ void process_command(char *line) {
             execute_external_command(args); // Execute if not a built-in command
         }
     } else {
-        printf("Debug: Multiple commands detected, executing in parallel\n");
+        if (debug_mode) printf("Debug: Multiple commands detected, executing in parallel\n");
         
         // If multiple commands, execute them in parallel.
         execute_commands_in_parallel(commands, num_commands);
@@ -263,7 +266,7 @@ void process_command(char *line) {
         free(commands[i]);
     }
     free(commands);
-    printf("Debug: Finished processing command\n");
+    if (debug_mode) printf("Debug: Finished processing command\n");
     
     // In interactive mode, the prompt display is handled by the caller (main loop)
 }
@@ -352,7 +355,7 @@ char* findExecutable(char* command) {
  *             by a filename, and the array will be terminated before the '>' for execv execution.
  */
 void execute_external_command(char **args) {
-    printf("Log: Starting execute_external_command()\n");
+    if (debug_mode) printf("Log: Starting execute_external_command()\n");
     
     int redirect_index = -1;
     int fd = -1; // File descriptor for redirection, if needed
@@ -361,7 +364,7 @@ void execute_external_command(char **args) {
     for (int i = 0; args[i] != NULL; i++) {
         if (strcmp(args[i], ">") == 0) {
             redirect_index = i;
-            printf("Log: Redirection found at index %d\n", redirect_index);
+            if (debug_mode) printf("Log: Redirection found at index %d\n", redirect_index);
             break;
         }
     }
@@ -375,8 +378,10 @@ void execute_external_command(char **args) {
     pid_t pid = fork();
 
     if (pid == 0) { // Child process
-        printf("Log: Forked in execute_external_command() with pid = 0\n");
-        printf("Log: In child process (execute_external_command)\n");
+        if (debug_mode) {
+            printf("Log: Forked in execute_external_command() with pid = 0\n");
+            printf("Log: In child process (execute_external_command)\n");
+        }
         // Handle redirection by replacing STDOUT
         if (redirect_index != -1) {
             fd = open(args[redirect_index + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -390,35 +395,35 @@ void execute_external_command(char **args) {
         }
 
         // Execute the command
-        printf("Log: Executing %s\n", executablePath);
+        if (debug_mode) printf("Log: Executing %s\n", executablePath);
         if (execv(executablePath, args) == -1) {
             perror("wish: execv");
             exit(EXIT_FAILURE);
         }
     } else if (pid > 0) {
-        printf("Log: Forked in execute_external_command() with pid = %d\n", pid);
+        if (debug_mode) printf("Log: Forked in execute_external_command() with pid = %d\n", pid);
         // Parent process waits for the child process to complete
         int status;
         waitpid(pid, &status, 0);
-        printf("Log: Child process completed\n");
+        if (debug_mode) printf("Log: Child process completed\n");
     } else {
         perror("wish: fork");
     }
     
     free(executablePath); // Free dynamically allocated path
-    printf("Log: Finished execute_external_command()\n");
+    if (debug_mode) printf("Log: Finished execute_external_command()\n");
 }
 
 
 
 
 void execute_commands_in_parallel(char **commands, int num_commands) {
-    printf("Log: Starting execute_commands_in_parallel() with %d commands\n", num_commands);
+    if (debug_mode) printf("Log: Starting execute_commands_in_parallel() with %d commands\n", num_commands);
     
     pid_t pids[num_commands]; // Array to store child PIDs
 
     for (int i = 0; i < num_commands; i++) {
-        printf("Log: Forking command %d in execute_commands_in_parallel()\n", i);
+        if (debug_mode) printf("Log: Forking command %d in execute_commands_in_parallel()\n", i);
 
         pids[i] = fork();
         
@@ -438,11 +443,11 @@ void execute_commands_in_parallel(char **commands, int num_commands) {
 
     // Parent waits for all child processes
     for (int i = 0; i < num_commands; i++) {
-        printf("Log: Waiting for command %d to finish in execute_commands_in_parallel()\n", i);
+        if (debug_mode) printf("Log: Waiting for command %d to finish in execute_commands_in_parallel()\n", i);
 
         waitpid(pids[i], NULL, 0);
     }
-    printf("Log: Ending execute_commands_in_parallel()\n");
+    if (debug_mode) printf("Log: Ending execute_commands_in_parallel()\n");
 
 }
 
@@ -457,16 +462,32 @@ void execute_commands_in_parallel(char **commands, int num_commands) {
 
 
 int main(int argc, char *argv[]) {
+
+    // Process command-line arguments to set debug_mode
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--debug") == 0) {
+            debug_mode = 1;
+        } else if (strcmp(argv[i], "--help") == 0) {
+            printf("Usage: wish [options]\n");
+            printf("Options:\n");
+            printf("  --help        Display this help message and exit\n");
+            printf("  --debug       Run in debug mode\n");
+            return 0;  // Exit after displaying help
+        }
+    }
+
     initPathList(&globalPathList, 10);
     initDefaultPath(&globalPathList);
 
     char *line = NULL;
     size_t linecap = 0;
     FILE *input_stream = stdin;
-    bool isInteractive = (argc == 1);
+    // Check if the standard input is a terminal
+    bool isInteractive = isatty(STDIN_FILENO);
 
-
-    printf("Debug: Starting shell in %s mode\n", isInteractive ? "interactive" : "batch");
+    if (debug_mode) {
+        printf("Debug: Starting shell in %s mode\n", isInteractive ? "interactive" : "batch");
+    }
 
     // Display initial prompt if in interactive mode
     if (isInteractive) {
@@ -479,9 +500,9 @@ int main(int argc, char *argv[]) {
 
         // Display prompt after command execution in interactive mode
         if (isInteractive) {
-            printf("Debug: Command processing finished, displaying prompt\n");
-
+            if (debug_mode) printf("Debug: Command processing finished, displaying prompt\n");
             printf("wish> ");
+            fflush(stdout); // Ensure the prompt is displayed immediately after printing
         }
     }
 
@@ -495,8 +516,7 @@ int main(int argc, char *argv[]) {
 
     free(line);
     freePathList(&globalPathList);
-    printf("Debug: Exiting shell\n");
+    if (debug_mode) printf("Debug: Exiting shell\n");
 
     return 0;
 }
-

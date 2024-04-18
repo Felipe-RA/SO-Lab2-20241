@@ -6,5 +6,3 @@ if ! [[ -x wish ]]; then
 fi
 
 ../tester/run-tests.sh $*
-
-

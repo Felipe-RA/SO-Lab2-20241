@@ -204,7 +204,12 @@ void printCurrentPaths() {
 // returns 1 if built-in; if not buil-in returns 0
 int check_builtin_commands(char **args, int arg_count) {
     if (strcmp(args[0], "exit") == 0) {
-        exit(0);
+        if (arg_count > 1) { // If there are more arguments after 'exit'
+            fprintf(stderr, "An error has occurred\n");
+            return 1; // Return 1 to indicate a built-in command was processed but with error
+        } else {
+            exit(0); // Correct use of exit
+        }
     } else if (strcmp(args[0], "cd") == 0) {
         if (args[1] == NULL || args[2] != NULL) {
             fprintf(stderr, "An error has occurred\n");
@@ -221,7 +226,9 @@ int check_builtin_commands(char **args, int arg_count) {
             addPath(&globalPathList, args[i]); // Add new paths
         }
 
-        printCurrentPaths(); // Print the current paths after updating
+        if (debug_mode) {
+            printCurrentPaths(); // Print paths only if in debug mode
+        }        
         return 1; // Indicating it's a built-in command
     }
 
@@ -232,44 +239,53 @@ int check_builtin_commands(char **args, int arg_count) {
 void process_command(char *line) {
     if (debug_mode) printf("Log: Starting process_command() with line: %s\n", line);
 
-    // Trim the line and check if it's empty or all whitespace
-    if (is_line_empty_or_whitespace(line)){
+    // Check if the line is empty or consists only of whitespace
+    if (is_line_empty_or_whitespace(line)) {
         if (debug_mode) printf("Debug: Command is empty or whitespace\n");
-
         return;
+    }
+
+    // Explicit check for line consisting solely of '&'. The machete move as i like to call it
+    if (strcmp(line, "&\n") == 0 || strcmp(line, "&") == 0) {
+        if (debug_mode) printf("Debug: Line contains standalone '&' - Ignored.\n");
+        // Don't throw an error, just return
+        return;  
     }
 
     char** commands;
     int num_commands = 0;
-    split_commands(line, &commands, &num_commands); // Split line into parallel commands
+    split_commands(line, &commands, &num_commands); // Split line into commands, potentially separated by '&'
     if (debug_mode) printf("Debug: Number of commands to process: %d\n", num_commands);
 
-    if (num_commands == 1) {
-        if (debug_mode) printf("Log: Processing a single command in process_command()\n");
-
-        // If only one command, process normally.
-        char *args[MAX_LINE / 2 + 1]; // Command arguments
-        parse_command_to_args(commands[0], args); // Parse command string to args
-        
-        if (!check_builtin_commands(args, count_args(args))) {
-            execute_external_command(args); // Execute if not a built-in command
-        }
-    } else {
-        if (debug_mode) printf("Debug: Multiple commands detected, executing in parallel\n");
-        
-        // If multiple commands, execute them in parallel.
+    if (num_commands > 1) {
+        // Handle all commands in parallel
+        if (debug_mode) printf("Debug: Preparing to execute multiple commands in parallel.\n");
         execute_commands_in_parallel(commands, num_commands);
+    } else {
+        // Process a single command
+        if (debug_mode) printf("Log: Processing a single command: %s\n", commands[0]);
+
+        // Validate command before parsing arguments
+        if (commands[0][0] == '\0' || strcmp(commands[0], "&") == 0) {
+            if (debug_mode) printf("Debug: Invalid command or standalone '&'.\n");
+            fprintf(stderr, "An error has occurred\n");
+        } else {
+            char *args[MAX_LINE / 2 + 1];
+            parse_command_to_args(commands[0], args);
+            if (!check_builtin_commands(args, count_args(args))) {
+                execute_external_command(args); // Execute if not a built-in command
+            }
+        }
     }
 
-    // Free dynamically allocated commands array after execution
+    // Free dynamically allocated memory for commands
     for (int i = 0; i < num_commands; i++) {
         free(commands[i]);
     }
     free(commands);
-    if (debug_mode) printf("Debug: Finished processing command\n");
-    
-    // In interactive mode, the prompt display is handled by the caller (main loop)
+    if (debug_mode) printf("Debug: Finished processing all commands\n");
 }
+
 
 
 
@@ -369,6 +385,27 @@ void execute_external_command(char **args) {
         }
     }
 
+    if (redirect_index != -1) {
+        // Check if there's no file name after '>'
+        if (args[redirect_index + 1] == NULL) {
+            fprintf(stderr, "An error has occurred\n");
+            return; // Return without trying to execute anything
+        }
+
+
+        // Check if there is more than one file name after '>'
+        if (args[redirect_index + 2] != NULL) {
+            fprintf(stderr, "An error has occurred\n");
+            return; // Return without executing as only one file should follow '>'
+        }
+
+        fd = open(args[redirect_index + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd == -1) {
+            perror("wish: open");
+            return;
+        }
+    }
+
     char* executablePath = findExecutable(args[0]);
     if (!executablePath) {
         fprintf(stderr, "An error has occurred\n");
@@ -385,7 +422,7 @@ void execute_external_command(char **args) {
         // Handle redirection by replacing STDOUT
         if (redirect_index != -1) {
             fd = open(args[redirect_index + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (fd == -1) {
+            if (fsync(fd) == -1) {
                 perror("An error has occurred\n");
                 exit(EXIT_FAILURE);
             }
@@ -418,12 +455,16 @@ void execute_external_command(char **args) {
 
 
 void execute_commands_in_parallel(char **commands, int num_commands) {
-    if (debug_mode) printf("Log: Starting execute_commands_in_parallel() with %d commands\n", num_commands);
+    if (debug_mode) {
+        printf("Log: Starting execute_commands_in_parallel() with %d commands\n", num_commands);
+    }
     
     pid_t pids[num_commands]; // Array to store child PIDs
 
     for (int i = 0; i < num_commands; i++) {
-        if (debug_mode) printf("Log: Forking command %d in execute_commands_in_parallel()\n", i);
+        if (debug_mode) {
+            printf("Log: Forking command %d in execute_commands_in_parallel(): %s\n", i, commands[i]);
+        }
 
         pids[i] = fork();
         
@@ -431,24 +472,44 @@ void execute_commands_in_parallel(char **commands, int num_commands) {
             char *args[MAX_LINE / 2 + 1]; // Array for command arguments
             parse_command_to_args(commands[i], args); // Parse command string to args
             
+            if (debug_mode && args[1] && strcmp(args[1], ">") == 0) {
+                printf("Debug: Redirecting output of command to file: %s\n", args[2]);
+            }
+
             if (!check_builtin_commands(args, count_args(args))) {
                 execute_external_command(args); // Execute if not a built-in command
             }
             exit(0); // Exit after execution
         } else if (pids[i] < 0) {
-            perror("An error has occurred\n");
+            perror("Fork failed");
             exit(EXIT_FAILURE); // Forking failed
+        } else {
+            if (debug_mode) {
+                printf("Log: Successfully forked child process %d\n", pids[i]);
+            }
         }
     }
 
     // Parent waits for all child processes
     for (int i = 0; i < num_commands; i++) {
-        if (debug_mode) printf("Log: Waiting for command %d to finish in execute_commands_in_parallel()\n", i);
+        int status;
+        if (debug_mode) {
+            printf("Log: Waiting for command %d (PID %d) to finish in execute_commands_in_parallel()\n", i, pids[i]);
+        }
 
-        waitpid(pids[i], NULL, 0);
+        waitpid(pids[i], &status, 0);
+
+        if (debug_mode) {
+            if (WIFEXITED(status)) {
+                printf("Debug: Process %d exited with status %d\n", pids[i], WEXITSTATUS(status));
+            } else if (WIFSIGNALED(status)) {
+                printf("Debug: Process %d killed by signal %d\n", pids[i], WTERMSIG(status));
+            }
+        }
     }
-    if (debug_mode) printf("Log: Ending execute_commands_in_parallel()\n");
-
+    if (debug_mode) {
+        printf("Log: Ending execute_commands_in_parallel()\n");
+    }
 }
 
 
@@ -482,7 +543,8 @@ int main(int argc, char *argv[]) {
             // Assume any other argument is a batch script filename
             input_stream = fopen(argv[i], "r");
             if (!input_stream) {
-                fprintf(stderr, "Error: Cannot open file '%s'\n", argv[i]);
+                // fprintf(stderr, "Error: Cannot open file '%s'\n", argv[i]);
+                fprintf(stderr, "An error has occurred\n");  // general error message
                 exit(EXIT_FAILURE);
             }
             isInteractive = false; // Not interactive mode if a script file is specified
